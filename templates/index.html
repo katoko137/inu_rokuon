@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Go2 Audio Recorder</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+  <main class="shell">
+    <section class="header">
+      <div>
+        <p class="eyebrow">Unitree Go2 WebRTC</p>
+        <h1>Audio Recorder</h1>
+      </div>
+      <div class="status-pill" id="statusPill" data-status="{{ status.status }}">{{ status.status }}</div>
+    </section>
+
+    <section class="workspace">
+      <form id="recordForm" class="panel" method="post" action="{{ url_for('start_recording') }}">
+        <div class="panel-header">
+          <h2>録音設定</h2>
+          <button class="primary" type="submit" id="startButton">録音開始</button>
+        </div>
+
+        <div class="grid">
+          <label>
+            <span>接続方式</span>
+            <select name="method" id="methodSelect">
+              <option value="localsta" selected>Local STA</option>
+              <option value="localap">Local AP</option>
+              <option value="remote">Remote</option>
+            </select>
+          </label>
+
+          <label>
+            <span>Go2 IP</span>
+            <input name="ip" value="{{ default_ip }}" placeholder="192.168.8.181">
+          </label>
+
+          <label>
+            <span>シリアル番号</span>
+            <input name="serial" placeholder="B42D2000XXXXXXXX">
+          </label>
+
+          <label>
+            <span>録音時間</span>
+            <input name="duration" type="number" min="0.5" max="600" step="0.5" value="5">
+          </label>
+
+          <label>
+            <span>ファイル名</span>
+            <input name="filename" placeholder="空欄なら自動生成">
+          </label>
+
+          <label>
+            <span>AES-128 key</span>
+            <input name="aes_key" placeholder="必要な場合のみ">
+          </label>
+
+          <label class="remote-only">
+            <span>ユーザー名</span>
+            <input name="username" autocomplete="username">
+          </label>
+
+          <label class="remote-only">
+            <span>パスワード</span>
+            <input name="password" type="password" autocomplete="current-password">
+          </label>
+
+          <label class="remote-only">
+            <span>リージョン</span>
+            <select name="region">
+              <option value="global" selected>global</option>
+              <option value="cn">cn</option>
+            </select>
+          </label>
+        </div>
+      </form>
+
+      <section class="panel monitor">
+        <div class="panel-header">
+          <h2>状態</h2>
+          <button class="secondary danger" id="stopButton" type="button">停止</button>
+        </div>
+
+        <div class="meter">
+          <div id="progressBar" style="width: {{ (status.progress or 0) * 100 }}%"></div>
+        </div>
+
+        <dl class="stats">
+          <div>
+            <dt>ステータス</dt>
+            <dd id="statusText">{{ status.status }}</dd>
+          </div>
+          <div>
+            <dt>録音秒数</dt>
+            <dd><span id="secondsText">{{ status.seconds_recorded or 0 }}</span>s</dd>
+          </div>
+          <div>
+            <dt>ファイル</dt>
+            <dd id="fileText">{{ status.filename or "-" }}</dd>
+          </div>
+        </dl>
+
+        <p class="message" id="messageText"></p>
+        <a class="download" id="downloadLink" href="{{ status.download_url or '#' }}">WAV をダウンロード</a>
+      </section>
+    </section>
+
+    <section class="recordings">
+      <div class="section-title">
+        <h2>録音ファイル</h2>
+        <span>{{ recordings|length }} files</span>
+      </div>
+      {% if recordings %}
+        <div class="file-list">
+          {% for item in recordings %}
+            <a class="file-row" href="{{ item.download_url }}">
+              <span>{{ item.name }}</span>
+              <small>{{ item.size_kb }} KB / {{ item.updated_at }}</small>
+            </a>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="empty">まだ録音ファイルはありません。</p>
+      {% endif %}
+    </section>
+  </main>
+
+  <script>
+    const form = document.getElementById("recordForm");
+    const stopButton = document.getElementById("stopButton");
+    const startButton = document.getElementById("startButton");
+    const methodSelect = document.getElementById("methodSelect");
+    const statusPill = document.getElementById("statusPill");
+    const statusText = document.getElementById("statusText");
+    const secondsText = document.getElementById("secondsText");
+    const fileText = document.getElementById("fileText");
+    const progressBar = document.getElementById("progressBar");
+    const messageText = document.getElementById("messageText");
+    const downloadLink = document.getElementById("downloadLink");
+
+    function applyMethodVisibility() {
+      const remote = methodSelect.value === "remote";
+      document.querySelectorAll(".remote-only").forEach((node) => {
+        node.hidden = !remote;
+      });
+    }
+
+    function renderStatus(data) {
+      statusPill.textContent = data.status || "idle";
+      statusPill.dataset.status = data.status || "idle";
+      statusText.textContent = data.status || "idle";
+      secondsText.textContent = data.seconds_recorded || 0;
+      fileText.textContent = data.filename || "-";
+      progressBar.style.width = `${Math.min((data.progress || 0) * 100, 100)}%`;
+      startButton.disabled = !!data.active;
+      stopButton.disabled = !data.active;
+      messageText.textContent = data.error || "";
+
+      if (data.download_url && !data.active) {
+        downloadLink.href = data.download_url;
+        downloadLink.classList.add("is-visible");
+      } else {
+        downloadLink.classList.remove("is-visible");
+      }
+
+      if (["finished", "stopped", "error"].includes(data.status)) {
+        window.setTimeout(() => window.location.reload(), 1200);
+      }
+    }
+
+    async function pollStatus() {
+      const response = await fetch("{{ url_for('api_status') }}");
+      renderStatus(await response.json());
+    }
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      messageText.textContent = "";
+      const response = await fetch(form.action, {
+        method: "POST",
+        headers: {"X-Requested-With": "fetch"},
+        body: new FormData(form),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        messageText.textContent = data.error || "録音を開始できませんでした。";
+        return;
+      }
+      renderStatus(data.job);
+    });
+
+    stopButton.addEventListener("click", async () => {
+      await fetch("{{ url_for('stop_recording') }}", {
+        method: "POST",
+        headers: {"X-Requested-With": "fetch"},
+      });
+      await pollStatus();
+    });
+
+    methodSelect.addEventListener("change", applyMethodVisibility);
+    applyMethodVisibility();
+    pollStatus();
+    window.setInterval(pollStatus, 1000);
+  </script>
+</body>
+</html>
